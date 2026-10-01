@@ -9,7 +9,7 @@
     <link rel="icon" href="faviconlight.png" media="(prefers-color-scheme: light)">
     <link rel="icon" href="favicondark.png" media="(prefers-color-scheme: dark)">
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- Drag and Drop Engine -->
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
     
     <style>
@@ -98,7 +98,7 @@
             cursor: pointer; z-index: 90; transition: transform 0.2s ease;
         }
         #more-apps-btn:hover { transform: scale(1.05); }
-        #more-apps-btn img { width: 24px; height: 24px; filter: invert(1); }
+        #more-apps-btn svg { width: 20px; height: 20px; fill: white; }
 
         #canvas {
             padding: 120px 32px 32px 32px; box-sizing: border-box; background: var(--bg-color);
@@ -156,7 +156,7 @@
                 <div class="control-item">
                     <input type="checkbox" id="bg-trans"> <label>Transparent</label>
                 </div>
-                <button class="primary-btn" style="margin-top: 0; padding: 8px 16px;" id="export-btn" onclick="exportImage()">Export 16:9</button>
+                <button class="primary-btn" style="margin-top: 0; padding: 8px 16px;" id="export-btn" onclick="exportNativeImage()">Export 16:9</button>
                 
                 <button class="secondary-btn" style="border:none; padding:4px;" onclick="toggleFullscreen()" title="Hide Controls">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>
@@ -169,8 +169,7 @@
         </div>
 
         <a id="more-apps-btn" href="https://apps.muetzdesign.com" title="More Muetzdesign Apps">
-            <!-- Fallback inline SVG if more-apps-icon.png is missing -->
-            <svg viewBox="0 0 24 24" fill="white" width="24" height="24"><path d="M4 4h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 10h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 16h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4z"/></svg>
+            <svg viewBox="0 0 24 24"><path d="M4 4h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 10h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4zM4 16h4v4H4zm6 0h4v4h-4zm6 0h4v4h-4z"/></svg>
         </a>
 
         <div id="canvas"></div>
@@ -193,7 +192,7 @@
         }
 
         function getCurrentOrder() {
-            return Array.from(document.querySelectorAll('.image-cell img')).map(img => img.dataset.originalUrl || img.src);
+            return Array.from(document.querySelectorAll('.image-cell img')).map(img => img.dataset.originalUrl);
         }
 
         function rebuildColumns() {
@@ -223,10 +222,26 @@
                 cell.className = 'image-cell';
                 
                 const img = document.createElement('img');
-                img.dataset.originalUrl = url; // Store original URL for tracking
+                img.dataset.originalUrl = url;
+                
+                // Smart CORS Loading: Try anonymous first so native export works on GitHub pages.
+                img.crossOrigin = "anonymous";
+                img.onload = () => { img.dataset.loaded = "true"; };
+                
+                img.onerror = () => {
+                    // Fallback 1: Try AllOrigins Proxy
+                    if (!img.dataset.proxied) {
+                        img.dataset.proxied = "true";
+                        img.src = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+                    } else {
+                        // Fallback 2: Remove CORS just so the user can see it (export will flag it)
+                        img.removeAttribute("crossOrigin");
+                        img.dataset.tainted = "true";
+                        img.src = url;
+                    }
+                };
+                
                 img.src = url;
-                img.onerror = () => cell.style.display = 'none';
-
                 cell.appendChild(img);
                 targetCol.appendChild(cell);
             });
@@ -262,84 +277,89 @@
             document.getElementById('canvas').classList.remove('fullscreen-mode');
         }
 
-        // Robust Base64 Image Converter
-        async function fetchAsBase64(url) {
-            try {
-                // Route through a reliable CORS proxy to bypass server blocks
-                const proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(url);
-                const response = await fetch(proxyUrl);
-                const blob = await response.blob();
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onloadend = () => resolve(reader.result);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(blob);
-                });
-            } catch (e) {
-                console.warn("Proxy failed for: " + url, e);
-                return url; // Fallback to original if proxy fails
-            }
+        // Draws perfect corner radiuses natively in canvas
+        function roundRect(ctx, x, y, w, h, r) {
+            if (w < 2 * r) r = w / 2;
+            if (h < 2 * r) r = h / 2;
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.arcTo(x + w, y, x + w, y + h, r);
+            ctx.arcTo(x + w, y + h, x, y + h, r);
+            ctx.arcTo(x, y + h, x, y, r);
+            ctx.arcTo(x, y, x + w, y, r);
+            ctx.closePath();
         }
 
-        async function exportImage() {
+        // Custom Native Canvas Engine (Replaces html2canvas entirely)
+        async function exportNativeImage() {
             const btn = document.getElementById('export-btn');
             const originalText = btn.innerText;
-            btn.innerText = "Processing Images...";
+            btn.innerText = "Rendering Canvas...";
             btn.disabled = true;
 
             try {
                 const res = document.getElementById('res-select').value;
                 const isTransparent = document.getElementById('bg-trans').checked;
-                const images = document.querySelectorAll('.image-cell img');
-                
-                // STEP 1: Inject Base64 data into the DOM to un-taint the canvas
-                for (let img of images) {
-                    if (!img.src.startsWith('data:')) {
-                        const base64 = await fetchAsBase64(img.dataset.originalUrl);
-                        img.src = base64;
-                    }
-                }
-                
-                // Allow DOM a moment to re-render the Base64 strings
-                await new Promise(r => setTimeout(r, 200));
                 
                 let targetW = 1920, targetH = 1080;
                 if (res === "1440") { targetW = 2560; targetH = 1440; }
                 if (res === "2160") { targetW = 3840; targetH = 2160; }
 
-                const canvasEl = document.getElementById('canvas');
-                const wasFullscreen = canvasEl.classList.contains('fullscreen-mode');
-                canvasEl.classList.add('fullscreen-mode');
-
-                btn.innerText = "Rendering Grid...";
-                
-                // STEP 2: Render safely
-                const rawCanvas = await html2canvas(canvasEl, {
-                    useCORS: true,
-                    backgroundColor: null,
-                    scale: 2
-                });
-
-                if (!wasFullscreen) canvasEl.classList.remove('fullscreen-mode');
-
                 const finalCanvas = document.createElement('canvas');
                 finalCanvas.width = targetW;
                 finalCanvas.height = targetH;
-                const ctx = finalCanvas.getContext('2d');
+                const ctx = finalCanvas.getContext('2d', { alpha: isTransparent });
 
                 if (!isTransparent) {
                     ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-color').trim() || '#ffffff';
                     ctx.fillRect(0, 0, targetW, targetH);
                 }
 
-                // Math to fit the entire board into the 16:9 boundary
-                const fitScale = Math.min(targetW / rawCanvas.width, targetH / rawCanvas.height) * 0.95;
-                const dw = rawCanvas.width * fitScale;
-                const dh = rawCanvas.height * fitScale;
-                const dx = (targetW - dw) / 2;
-                const dy = (targetH - dh) / 2;
+                const board = document.getElementById('canvas');
+                const boardRect = board.getBoundingClientRect();
+                
+                // Math to scale physical DOM into the 16:9 boundary (92% for safe margins)
+                const scale = Math.min(targetW / boardRect.width, targetH / boardRect.height) * 0.92;
+                
+                const offsetX = (targetW - (boardRect.width * scale)) / 2;
+                const offsetY = (targetH - (boardRect.height * scale)) / 2;
+                
+                const radiusVal = parseInt(document.getElementById('rad-slider').value) * scale;
+                const images = document.querySelectorAll('.image-cell img');
+                let taintedAlert = false;
 
-                ctx.drawImage(rawCanvas, dx, dy, dw, dh);
+                for (let img of images) {
+                    if (!img.complete || img.naturalWidth === 0) continue; // Skip broken images
+
+                    const imgRect = img.getBoundingClientRect();
+                    
+                    // Convert screen coordinates to board-relative coordinates (bypasses scroll offset bugs)
+                    const relX = imgRect.left - boardRect.left;
+                    const relY = imgRect.top - boardRect.top;
+                    
+                    const drawX = offsetX + (relX * scale);
+                    const drawY = offsetY + (relY * scale);
+                    const drawW = imgRect.width * scale;
+                    const drawH = imgRect.height * scale;
+
+                    try {
+                        if (radiusVal > 0) {
+                            ctx.save();
+                            roundRect(ctx, drawX, drawY, drawW, drawH, radiusVal);
+                            ctx.clip();
+                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+                            ctx.restore();
+                        } else {
+                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+                        }
+                    } catch (e) {
+                        taintedAlert = true;
+                    }
+                }
+
+                if (taintedAlert) {
+                    alert("A few images were blocked by cross-origin policies and couldn't be drawn natively. Try using direct image links (ending in .png/.jpg).");
+                }
 
                 const dataUrl = finalCanvas.toDataURL('image/png');
                 const link = document.createElement('a');
@@ -349,7 +369,7 @@
 
             } catch (error) {
                 console.error(error);
-                alert("Export failed. Please check your console for errors.");
+                alert("Render failed. Please check console for details.");
             } finally {
                 btn.innerText = originalText;
                 btn.disabled = false;
