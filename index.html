@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moodboard Generator</title>
+    
+    <!-- Dynamic Favicon Support -->
+    <link rel="icon" href="faviconlight.png" media="(prefers-color-scheme: light)">
+    <link rel="icon" href="favicondark.png" media="(prefers-color-scheme: dark)">
+
+    <!-- Export Engine -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- Drag and Drop Engine -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+    
+    <style>
+        :root {
+            --bg-color: #ffffff;
+            --text-color: #111111;
+            --accent: #000000;
+            --ui-gray: #f4f4f5;
+            --border: #e2e2e2;
+            --gap: 20px;
+            --radius: 0px;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            overflow-x: hidden;
+        }
+
+        /* ----- SETUP VIEW ----- */
+        #setup-view {
+            max-width: 800px;
+            margin: 8vh auto;
+            padding: 40px;
+            box-sizing: border-box;
+        }
+        
+        h1 { margin-top: 0; font-weight: 600; letter-spacing: -0.02em; }
+        p { color: #666; line-height: 1.5; margin-bottom: 24px; }
+        
+        textarea {
+            width: 100%;
+            height: 300px;
+            padding: 16px;
+            font-family: SFMono-Regular, Consolas, monospace;
+            font-size: 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--ui-gray);
+            box-sizing: border-box;
+            resize: vertical;
+            white-space: pre;
+            overflow-wrap: normal;
+        }
+        
+        textarea:focus { outline: none; border-color: var(--accent); background: #ffffff; }
+        
+        .primary-btn {
+            background-color: var(--accent);
+            color: #ffffff;
+            border: none;
+            padding: 14px 28px;
+            font-size: 16px;
+            font-weight: 500;
+            border-radius: 6px;
+            cursor: pointer;
+            margin-top: 20px;
+            transition: opacity 0.2s;
+        }
+        .primary-btn:hover { opacity: 0.8; }
+        .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ----- MOODBOARD VIEW ----- */
+        #moodboard-view { display: none; }
+
+        /* Top Toolbar */
+        #toolbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 16px;
+            z-index: 100;
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        #toolbar.hidden { transform: translateY(-100%); }
+        .toolbar-group { display: flex; align-items: center; gap: 16px; }
+
+        .control-item {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 13px; font-weight: 500; color: #444;
+        }
+        input[type="range"] { width: 100px; cursor: pointer; accent-color: var(--accent); }
+        select, input[type="checkbox"] { cursor: pointer; padding: 4px; border-radius: 4px; border: 1px solid var(--border); }
+
+        .secondary-btn {
+            background: transparent; color: var(--accent);
+            border: 1px solid var(--border); padding: 8px 16px;
+            border-radius: 6px; font-size: 13px; font-weight: 500;
+            cursor: pointer; transition: background 0.2s;
+        }
+        .secondary-btn:hover { background: var(--ui-gray); }
+
+        /* Reveal Arrow */
+        #reveal-arrow {
+            position: fixed; top: 16px; right: 24px;
+            width: 36px; height: 36px;
+            background: rgba(0, 0, 0, 0.5); backdrop-filter: blur(8px);
+            border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; z-index: 99; opacity: 0; pointer-events: none;
+            transition: opacity 0.3s, background 0.2s;
+        }
+        #reveal-arrow.visible { opacity: 1; pointer-events: auto; }
+        #reveal-arrow:hover { background: rgba(0, 0, 0, 0.8); }
+        #reveal-arrow svg { fill: none; stroke: white; stroke-width: 2.5; width: 18px; height: 18px; }
+
+        /* Physical Flexbox Grid Layout */
+        #canvas {
+            padding: 120px 32px 32px 32px;
+            box-sizing: border-box;
+            background: var(--bg-color);
+            display: flex;
+            gap: var(--gap);
+            width: 100%;
+            transition: padding 0.4s ease;
+        }
+        #canvas.fullscreen-mode { padding-top: 32px; }
+
+        /* Draggable Columns */
+        .board-column {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: var(--gap);
+            min-height: 200px;
+        }
+
+        .image-cell {
+            display: block;
+            cursor: grab;
+            position: relative;
+        }
+        .image-cell:active { cursor: grabbing; }
+
+        .sortable-ghost { opacity: 0.4; }
+        .sortable-drag { cursor: grabbing !important; }
+
+        .image-cell img {
+            width: 100%;
+            height: auto;
+            display: block;
+            border-radius: var(--radius);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="setup-view">
+        <h1>Moodboard Generator</h1>
+        <p>Paste your image URLs. You can drag and drop images between columns to organize your layout.</p>
+        <textarea id="url-input" placeholder="Paste URLs here..."></textarea>
+        <br>
+        <button class="primary-btn" onclick="initializeBoard()">Generate Canvas</button>
+    </div>
+
+    <div id="moodboard-view">
+        <div id="toolbar">
+            <div class="toolbar-group">
+                <button class="secondary-btn" onclick="goBack()">← Back</button>
+            </div>
+            
+            <div class="toolbar-group">
+                <div class="control-item">
+                    <label>Cols:</label>
+                    <input type="range" id="col-slider" min="1" max="12" value="5" oninput="rebuildColumns()">
+                </div>
+                <div class="control-item">
+                    <label>Gutter:</label>
+                    <input type="range" id="gap-slider" min="0" max="60" value="20" oninput="updateCSS()">
+                </div>
+                <div class="control-item">
+                    <label>Radius:</label>
+                    <input type="range" id="rad-slider" min="0" max="40" value="0" oninput="updateCSS()">
+                </div>
+            </div>
+
+            <div class="toolbar-group">
+                <div class="control-item">
+                    <select id="res-select">
+                        <option value="1080">1080p</option>
+                        <option value="1440">2K</option>
+                        <option value="2160" selected>4K</option>
+                    </select>
+                </div>
+                <div class="control-item">
+                    <input type="checkbox" id="bg-trans"> <label>Transparent</label>
+                </div>
+                <button class="primary-btn" style="margin-top: 0; padding: 8px 16px;" id="export-btn" onclick="exportImage()">Export 16:9</button>
+                
+                <button class="secondary-btn" style="border:none; padding:4px;" onclick="toggleFullscreen()" title="Hide Controls">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>
+                </button>
+            </div>
+        </div>
+
+        <div id="reveal-arrow" onclick="toggleFullscreen()">
+            <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </div>
+
+        <div id="canvas"></div>
+    </div>
+
+    <script>
+        let sortableInstances = [];
+
+        function initializeBoard() {
+            const inputText = document.getElementById('url-input').value;
+            const urls = inputText.split('\n').map(url => url.trim()).filter(url => url.length > 5);
+            
+            if(urls.length === 0) { alert("Please paste URLs first."); return; }
+
+            document.getElementById('setup-view').style.display = 'none';
+            document.getElementById('moodboard-view').style.display = 'block';
+            
+            buildGrid(urls);
+            updateCSS();
+            window.scrollTo(0, 0);
+        }
+
+        function getCurrentOrder() {
+            return Array.from(document.querySelectorAll('.image-cell img')).map(img => img.src);
+        }
+
+        function rebuildColumns() {
+            const currentUrls = getCurrentOrder();
+            if(currentUrls.length > 0) {
+                buildGrid(currentUrls);
+            }
+            updateCSS();
+        }
+
+        function buildGrid(urls) {
+            const canvas = document.getElementById('canvas');
+            const colCount = parseInt(document.getElementById('col-slider').value);
+            
+            sortableInstances.forEach(instance => instance.destroy());
+            sortableInstances = [];
+            canvas.innerHTML = ''; 
+
+            const columns = Array.from({ length: colCount }, () => {
+                const col = document.createElement('div');
+                col.className = 'board-column';
+                canvas.appendChild(col);
+                return col;
+            });
+
+            urls.forEach((url, index) => {
+                const targetCol = columns[index % colCount];
+                
+                const cell = document.createElement('div');
+                cell.className = 'image-cell';
+                
+                const img = document.createElement('img');
+                img.src = url;
+                img.onerror = () => cell.style.display = 'none';
+
+                cell.appendChild(img);
+                targetCol.appendChild(cell);
+            });
+
+            columns.forEach(col => {
+                sortableInstances.push(new Sortable(col, {
+                    group: 'shared',
+                    animation: 150,
+                    ghostClass: 'sortable-ghost',
+                    dragClass: 'sortable-drag'
+                }));
+            });
+        }
+
+        function updateCSS() {
+            const gap = document.getElementById('gap-slider').value + 'px';
+            const rad = document.getElementById('rad-slider').value + 'px';
+            document.documentElement.style.setProperty('--gap', gap);
+            document.documentElement.style.setProperty('--radius', rad);
+        }
+
+        function toggleFullscreen() {
+            document.getElementById('toolbar').classList.toggle('hidden');
+            document.getElementById('reveal-arrow').classList.toggle('visible');
+            document.getElementById('canvas').classList.toggle('fullscreen-mode');
+        }
+
+        function goBack() {
+            document.getElementById('setup-view').style.display = 'block';
+            document.getElementById('moodboard-view').style.display = 'none';
+            document.getElementById('toolbar').classList.remove('hidden');
+            document.getElementById('reveal-arrow').classList.remove('visible');
+            document.getElementById('canvas').classList.remove('fullscreen-mode');
+        }
+
+        async function exportImage() {
+            const btn = document.getElementById('export-btn');
+            const originalText = btn.innerText;
+            btn.innerText = "Processing...";
+            btn.disabled = true;
+
+            try {
+                const res = document.getElementById('res-select').value;
+                const isTransparent = document.getElementById('bg-trans').checked;
+                
+                let targetW = 1920, targetH = 1080;
+                if (res === "1440") { targetW = 2560; targetH = 1440; }
+                if (res === "2160") { targetW = 3840; targetH = 2160; }
+
+                const canvasEl = document.getElementById('canvas');
+                const wasFullscreen = canvasEl.classList.contains('fullscreen-mode');
+                canvasEl.classList.add('fullscreen-mode');
+
+                const rawCanvas = await html2canvas(canvasEl, {
+                    useCORS: true,
+                    allowTaint: true,
+                    backgroundColor: null,
+                    scale: 2
+                });
+
+                if (!wasFullscreen) canvasEl.classList.remove('fullscreen-mode');
+
+                const finalCanvas = document.createElement('canvas');
+                finalCanvas.width = targetW;
+                finalCanvas.height = targetH;
+                const ctx = finalCanvas.getContext('2d');
+
+                if (!isTransparent) {
+                    ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--bg-color').trim() || '#ffffff';
+                    ctx.fillRect(0, 0, targetW, targetH);
+                }
+
+                const fitScale = Math.min(targetW / rawCanvas.width, targetH / rawCanvas.height) * 0.95;
+                const dw = rawCanvas.width * fitScale;
+                const dh = rawCanvas.height * fitScale;
+                const dx = (targetW - dw) / 2;
+                const dy = (targetH - dh) / 2;
+
+                ctx.drawImage(rawCanvas, dx, dy, dw, dh);
+
+                const dataUrl = finalCanvas.toDataURL('image/png');
+                const link = document.createElement('a');
+                link.download = `Moodboard_${res}p.png`;
+                link.href = dataUrl;
+                link.click();
+
+            } catch (error) {
+                console.error(error);
+                alert("Browser Security Block: Browsers prevent exporting external images to a data URL when running a local HTML file. Please hit F11, hide the controls, and use Windows Key + Shift + S to take a screenshot.");
+            } finally {
+                btn.innerText = originalText;
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
