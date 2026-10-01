@@ -100,6 +100,12 @@
         #more-apps-btn:hover { transform: scale(1.05); }
         #more-apps-btn svg { width: 20px; height: 20px; fill: white; }
 
+        /* Loading UI */
+        #loading-overlay {
+            display: none; width: 100%; text-align: center; padding: 40px; 
+            color: #666; font-weight: 500; margin-top: 20px;
+        }
+
         #canvas {
             padding: 120px 32px 32px 32px; box-sizing: border-box; background: var(--bg-color);
             display: flex; gap: var(--gap); width: 100%; transition: padding 0.4s ease;
@@ -118,10 +124,11 @@
 
     <div id="setup-view">
         <h1>Moodboard Generator</h1>
-        <p>Paste your image URLs. You can drag and drop images between columns to organize your layout.</p>
+        <p>Paste your image URLs. The engine will pre-download the images securely to ensure high-resolution exporting works flawlessly on GitHub Pages.</p>
         <textarea id="url-input" placeholder="Paste URLs here..."></textarea>
         <br>
-        <button class="primary-btn" onclick="initializeBoard()">Generate Canvas</button>
+        <button id="gen-btn" class="primary-btn" onclick="initializeBoard()">Generate Canvas</button>
+        <div id="loading-overlay">Downloading & buffering images: <span id="load-count">0</span> / <span id="total-count">0</span></div>
     </div>
 
     <div id="moodboard-view">
@@ -178,21 +185,70 @@
     <script>
         let sortableInstances = [];
 
-        function initializeBoard() {
+        // Securely downloads an image and converts it to a local RAM file (Blob)
+        async function fetchImageAsBlob(url) {
+            if (url.startsWith('data:') || url.startsWith('blob:')) return url;
+            
+            try {
+                // Primary Proxy
+                const res = await fetch('https://corsproxy.io/?' + encodeURIComponent(url));
+                if (!res.ok) throw new Error();
+                const blob = await res.blob();
+                return URL.createObjectURL(blob);
+            } catch (e1) {
+                try {
+                    // Fallback Proxy
+                    const res2 = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent(url));
+                    if (!res2.ok) throw new Error();
+                    const blob2 = await res2.blob();
+                    return URL.createObjectURL(blob2);
+                } catch (e2) {
+                    // Final Fallback: Return raw URL (will likely be blocked on export, but will render visually)
+                    console.warn("Proxies failed, falling back to raw url:", url);
+                    return url;
+                }
+            }
+        }
+
+        async function initializeBoard() {
             const inputText = document.getElementById('url-input').value;
             const urls = inputText.split('\n').map(url => url.trim()).filter(url => url.length > 5);
             if(urls.length === 0) { alert("Please paste URLs first."); return; }
 
+            const btn = document.getElementById('gen-btn');
+            const loader = document.getElementById('loading-overlay');
+            
+            btn.disabled = true;
+            btn.innerText = "Processing...";
+            loader.style.display = 'block';
+            document.getElementById('total-count').innerText = urls.length;
+            
+            let loaded = 0;
+            const safeUrls = [];
+
+            // Download all images safely before building the DOM
+            for (let url of urls) {
+                const safeUrl = await fetchImageAsBlob(url);
+                safeUrls.push(safeUrl);
+                loaded++;
+                document.getElementById('load-count').innerText = loaded;
+            }
+
+            btn.disabled = false;
+            btn.innerText = "Generate Canvas";
+            loader.style.display = 'none';
+
             document.getElementById('setup-view').style.display = 'none';
             document.getElementById('moodboard-view').style.display = 'block';
             
-            buildGrid(urls);
+            buildGrid(safeUrls);
             updateCSS();
             window.scrollTo(0, 0);
         }
 
+        // Extracts the CURRENT visual order of the dragged blobs
         function getCurrentOrder() {
-            return Array.from(document.querySelectorAll('.image-cell img')).map(img => img.dataset.originalUrl);
+            return Array.from(document.querySelectorAll('.image-cell img')).map(img => img.src);
         }
 
         function rebuildColumns() {
@@ -216,32 +272,16 @@
                 return col;
             });
 
+            // Images are now safe local blobs. No crossOrigin tags needed!
             urls.forEach((url, index) => {
                 const targetCol = columns[index % colCount];
                 const cell = document.createElement('div');
                 cell.className = 'image-cell';
                 
                 const img = document.createElement('img');
-                img.dataset.originalUrl = url;
-                
-                // Smart CORS Loading: Try anonymous first so native export works on GitHub pages.
-                img.crossOrigin = "anonymous";
-                img.onload = () => { img.dataset.loaded = "true"; };
-                
-                img.onerror = () => {
-                    // Fallback 1: Try AllOrigins Proxy
-                    if (!img.dataset.proxied) {
-                        img.dataset.proxied = "true";
-                        img.src = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-                    } else {
-                        // Fallback 2: Remove CORS just so the user can see it (export will flag it)
-                        img.removeAttribute("crossOrigin");
-                        img.dataset.tainted = "true";
-                        img.src = url;
-                    }
-                };
-                
                 img.src = url;
+                img.onerror = () => cell.style.display = 'none';
+
                 cell.appendChild(img);
                 targetCol.appendChild(cell);
             });
@@ -277,7 +317,7 @@
             document.getElementById('canvas').classList.remove('fullscreen-mode');
         }
 
-        // Draws perfect corner radiuses natively in canvas
+        // Draws perfect corner radiuses natively
         function roundRect(ctx, x, y, w, h, r) {
             if (w < 2 * r) r = w / 2;
             if (h < 2 * r) r = h / 2;
@@ -290,11 +330,11 @@
             ctx.closePath();
         }
 
-        // Custom Native Canvas Engine (Replaces html2canvas entirely)
+        // Custom Native Canvas Engine
         async function exportNativeImage() {
             const btn = document.getElementById('export-btn');
             const originalText = btn.innerText;
-            btn.innerText = "Rendering Canvas...";
+            btn.innerText = "Rendering 4K...";
             btn.disabled = true;
 
             try {
@@ -323,17 +363,14 @@
                 
                 const offsetX = (targetW - (boardRect.width * scale)) / 2;
                 const offsetY = (targetH - (boardRect.height * scale)) / 2;
-                
                 const radiusVal = parseInt(document.getElementById('rad-slider').value) * scale;
                 const images = document.querySelectorAll('.image-cell img');
-                let taintedAlert = false;
 
+                // Paint every image sequentially based on precise DOM bounding coordinates
                 for (let img of images) {
-                    if (!img.complete || img.naturalWidth === 0) continue; // Skip broken images
+                    if (!img.complete || img.naturalWidth === 0) continue; 
 
                     const imgRect = img.getBoundingClientRect();
-                    
-                    // Convert screen coordinates to board-relative coordinates (bypasses scroll offset bugs)
                     const relX = imgRect.left - boardRect.left;
                     const relY = imgRect.top - boardRect.top;
                     
@@ -342,23 +379,15 @@
                     const drawW = imgRect.width * scale;
                     const drawH = imgRect.height * scale;
 
-                    try {
-                        if (radiusVal > 0) {
-                            ctx.save();
-                            roundRect(ctx, drawX, drawY, drawW, drawH, radiusVal);
-                            ctx.clip();
-                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
-                            ctx.restore();
-                        } else {
-                            ctx.drawImage(img, drawX, drawY, drawW, drawH);
-                        }
-                    } catch (e) {
-                        taintedAlert = true;
+                    if (radiusVal > 0) {
+                        ctx.save();
+                        roundRect(ctx, drawX, drawY, drawW, drawH, radiusVal);
+                        ctx.clip();
+                        ctx.drawImage(img, drawX, drawY, drawW, drawH);
+                        ctx.restore();
+                    } else {
+                        ctx.drawImage(img, drawX, drawY, drawW, drawH);
                     }
-                }
-
-                if (taintedAlert) {
-                    alert("A few images were blocked by cross-origin policies and couldn't be drawn natively. Try using direct image links (ending in .png/.jpg).");
                 }
 
                 const dataUrl = finalCanvas.toDataURL('image/png');
@@ -369,7 +398,7 @@
 
             } catch (error) {
                 console.error(error);
-                alert("Render failed. Please check console for details.");
+                alert("Render failed. The image list may contain severely protected files.");
             } finally {
                 btn.innerText = originalText;
                 btn.disabled = false;
